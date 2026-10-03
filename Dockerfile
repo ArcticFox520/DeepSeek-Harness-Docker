@@ -10,7 +10,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends socat \
 ARG DSH_VERSION=latest
 RUN npm install -g @deepseek-ai/dsh@${DSH_VERSION}
 
-EXPOSE 3080
+EXPOSE 8080
 
 COPY entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
