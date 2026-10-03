@@ -1,4 +1,4 @@
-name: Build and Push DeepSeek Harness
+name: DeepSeek-Harness-Docker
 
 on:
   schedule:
