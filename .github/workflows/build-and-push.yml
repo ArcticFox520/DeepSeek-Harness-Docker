@@ -1,0 +1,96 @@
+name: Build and Push DeepSeek Harness
+
+on:
+  schedule:
+    - cron: '0 6 * * *'          # 每天 UTC 06:00 检测
+  workflow_dispatch:               # 支持手动触发
+
+env:
+  IMAGE_NAME: deepseek-harness
+
+jobs:
+  check-version:
+    runs-on: ubuntu-latest
+    outputs:
+      should_build: ${{ steps.check.outputs.should_build }}
+      version: ${{ steps.check.outputs.version }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Check latest upstream tag
+        id: check
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # 获取最新 tag
+          LATEST_TAG=$(gh api repos/deepseek-ai/deepseek-harness/tags \
+            --jq '.[0].name' 2>/dev/null || echo "")
+
+          if [ -z "$LATEST_TAG" ]; then
+            echo "无法获取 tag，跳过构建"
+            echo "should_build=false" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+
+          echo "上游最新 tag: $LATEST_TAG"
+
+          # 将 tag 转换为 npm 版本号
+          # 例如 dsh-v0.1.6-alpha.2 -> 0.1.6-alpha.2
+          NPM_VERSION=$(echo "$LATEST_TAG" | sed 's/^dsh-v//')
+          echo "对应 npm 版本: $NPM_VERSION"
+
+          # 检查该版本在 npm 上是否存在
+          if npm view @deepseek-ai/dsh@"$NPM_VERSION" version 2>/dev/null; then
+            echo "npm 上存在版本 $NPM_VERSION"
+
+            # 检查 Docker Hub 上是否已有对应镜像标签
+            if docker manifest inspect \
+                "${{ secrets.DOCKERHUB_USERNAME }}/${IMAGE_NAME}:${NPM_VERSION}" \
+                >/dev/null 2>&1; then
+              echo "Docker Hub 已存在 :${NPM_VERSION}，跳过构建"
+              echo "should_build=false" >> $GITHUB_OUTPUT
+            else
+              echo "Docker Hub 缺少 :${NPM_VERSION}，需要构建"
+              echo "should_build=true" >> $GITHUB_OUTPUT
+            fi
+          else
+            echo "npm 上不存在版本 $NPM_VERSION（仅有 GitHub tag），跳过"
+            echo "should_build=false" >> $GITHUB_OUTPUT
+          fi
+
+          echo "version=$NPM_VERSION" >> $GITHUB_OUTPUT
+
+  build-and-push:
+    needs: check-version
+    if: needs.check-version.outputs.should_build == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          platforms: linux/amd64,linux/arm64
+          build-args: |
+            DSH_VERSION=${{ needs.check-version.outputs.version }}
+          tags: |
+            ${{ secrets.DOCKERHUB_USERNAME }}/${{ env.IMAGE_NAME }}:${{ needs.check-version.outputs.version }}
+            ${{ secrets.DOCKERHUB_USERNAME }}/${{ env.IMAGE_NAME }}:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
