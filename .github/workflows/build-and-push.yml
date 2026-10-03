@@ -12,47 +12,67 @@ env:
   IMAGE_NAME: deepseek-harness
 
 jobs:
-  check-version:
+  resolve-version:
     runs-on: ubuntu-latest
     outputs:
-      should_build: ${{ steps.check.outputs.should_build }}
-      version: ${{ steps.check.outputs.version }}
+      dsh_version: ${{ steps.resolve.outputs.dsh_version }}
+      tag: ${{ steps.resolve.outputs.tag }}
+      is_manual: ${{ steps.resolve.outputs.is_manual }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Check latest upstream tag
-        id: check
+      - name: Resolve version and tag
+        id: resolve
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            SHORT_SHA=$(git rev-parse --short=7 HEAD)
+            DSH_VERSION=$(tr -d '[:space:]' < VERSION)
+
+            if [ -z "$DSH_VERSION" ]; then
+              echo "VERSION 文件为空，终止"
+              echo "tag=" >> $GITHUB_OUTPUT
+              exit 0
+            fi
+
+            echo "手动构建: dsh=$DSH_VERSION, tag=$SHORT_SHA"
+            echo "dsh_version=$DSH_VERSION" >> $GITHUB_OUTPUT
+            echo "tag=$SHORT_SHA" >> $GITHUB_OUTPUT
+            echo "is_manual=true" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+
           LATEST_TAG=$(gh api repos/deepseek-ai/deepseek-harness/tags \
             --jq '.[0].name' 2>/dev/null || echo "")
 
           if [ -z "$LATEST_TAG" ]; then
-            echo "should_build=false" >> $GITHUB_OUTPUT
+            echo "tag=" >> $GITHUB_OUTPUT
             exit 0
           fi
 
           NPM_VERSION=$(echo "$LATEST_TAG" | sed 's/^dsh-v//')
 
-          if npm view @deepseek-ai/dsh@"$NPM_VERSION" version 2>/dev/null; then
-            if docker manifest inspect \
-                "${{ secrets.DOCKERHUB_USERNAME }}/${IMAGE_NAME}:${NPM_VERSION}" \
-                >/dev/null 2>&1; then
-              echo "should_build=false" >> $GITHUB_OUTPUT
-            else
-              echo "should_build=true" >> $GITHUB_OUTPUT
-            fi
-          else
-            echo "should_build=false" >> $GITHUB_OUTPUT
+          if ! npm view @deepseek-ai/dsh@"$NPM_VERSION" version 2>/dev/null; then
+            echo "tag=" >> $GITHUB_OUTPUT
+            exit 0
           fi
 
-          echo "version=$NPM_VERSION" >> $GITHUB_OUTPUT
+          if docker manifest inspect \
+              "${{ secrets.DOCKERHUB_USERNAME }}/${IMAGE_NAME}:${NPM_VERSION}" \
+              >/dev/null 2>&1; then
+            echo "tag=" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+
+          echo "dsh_version=$NPM_VERSION" >> $GITHUB_OUTPUT
+          echo "tag=$NPM_VERSION" >> $GITHUB_OUTPUT
+          echo "is_manual=false" >> $GITHUB_OUTPUT
 
   build-and-push:
-    needs: check-version
-    if: needs.check-version.outputs.should_build == 'true'
+    needs: resolve-version
+    if: needs.resolve-version.outputs.tag != ''
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
@@ -77,15 +97,15 @@ jobs:
           push: true
           platforms: linux/amd64,linux/arm64
           build-args: |
-            DSH_VERSION=${{ needs.check-version.outputs.version }}
+            DSH_VERSION=${{ needs.resolve-version.outputs.dsh_version }}
           tags: |
-            ${{ secrets.DOCKERHUB_USERNAME }}/${{ env.IMAGE_NAME }}:${{ needs.check-version.outputs.version }}
-            ${{ secrets.DOCKERHUB_USERNAME }}/${{ env.IMAGE_NAME }}:latest
+            ${{ secrets.DOCKERHUB_USERNAME }}/${{ env.IMAGE_NAME }}:${{ needs.resolve-version.outputs.tag }}
+            ${{ needs.resolve-version.outputs.is_manual == 'false' && format('{0}/{1}:latest', secrets.DOCKERHUB_USERNAME, env.IMAGE_NAME) || '' }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
   update-readme:
-    needs: [check-version, build-and-push]
+    needs: [build-and-push]
     if: always() && (needs.build-and-push.result == 'success' || needs.build-and-push.result == 'skipped')
     runs-on: ubuntu-latest
     steps:
