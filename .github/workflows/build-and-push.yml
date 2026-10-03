@@ -85,6 +85,8 @@ jobs:
           cache-to: type=gha,mode=max
 
   update-readme:
+    needs: [check-version, build-and-push]
+    if: always() && (needs.build-and-push.result == 'success' || needs.build-and-push.result == 'skipped')
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
