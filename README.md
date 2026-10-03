@@ -13,7 +13,7 @@
 ```bash
 docker run -d \
   --name DeepseekHarness \
-  -p 8080:8080 \
+  -p 3080:8080 \
   -e DEEPSEEK_API_KEY="API_KEY" \
   -v dsh-data:/root/.dsh \
   arcticfox520/deepseek-harness:latest
@@ -29,7 +29,7 @@ services:
     image: arcticfox520/deepseek-harness:latest
     container_name: DeepseekHarness
     ports:
-      - "8080:8080"
+      - "3080:8080"
     environment:
       - API_KEY=${API_KEY}
     volumes:
